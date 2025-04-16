@@ -1,0 +1,215 @@
+#include "main.h"
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+#define NLINES 3      // Let it have 3 rows (Monday, Tuesday, Wednesday)
+#define MAXLINE 12     // Let each row have a maximum of 12 characters (including null-terminator)
+#define UART_REC 0x01 // for flags use
+#define Done 0x02     // for flags use
+
+unsigned short flags; // for flags use
+UART_HandleTypeDef huart2;
+char Buffer[1]; // for receiving and sending a single byte
+
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_USART2_UART_Init(void);
+
+// This is receiving ISR
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  flags |= UART_REC;
+  HAL_UART_Receive_IT(&huart2, (uint8_t *)Buffer, 1); // Restart UART interrupt
+}
+
+// Get a line input and return how many chars in it
+int get_line(char line[], int max)
+{
+  int i = 0; // Index to save each char
+
+  while (!(flags & Done)) // Continue until Done flag is set (when '\r' is detected)
+  {
+    if (flags & UART_REC) // Only process if UART interrupt has been triggered
+    {
+      flags &= ~UART_REC; // Clear the UART receive flag
+      HAL_UART_Transmit(&huart2, (uint8_t *)Buffer, 1, HAL_MAX_DELAY); // Echo received char back
+
+      if (Buffer[0] != '\r' && i < (max - 1)) // If not a carriage return, save to array and within max size
+        line[i++] = Buffer[0]; // Save character to array
+      else
+        flags |= Done; // Set Done flag when carriage return is received or max size is reached
+    }
+  }
+
+  line[i] = '\0'; // Null-terminate the string
+  return i;
+}
+
+int main(void)
+{
+  int nchars, j;
+  char datanum[2];
+  char line[MAXLINE];
+  char strtbl[NLINES][MAXLINE]; // 3 lines, 12 characters maximum for each phrase
+  char (*nxt_string)[MAXLINE] = strtbl;
+
+  char msg[] = "Enter three phrases: Monday, Tuesday, and Wednesday.";
+
+  HAL_Init();
+  SystemClock_Config();
+  MX_GPIO_Init();
+  MX_USART2_UART_Init();
+
+  HAL_UART_Receive_IT(&huart2, (uint8_t *)Buffer, 1); // Start receiving data in interrupt mode
+
+  __HAL_UART_FLUSH_DRREGISTER(&huart2);  // Flush UART data register to avoid residual data
+
+  // Send the prompt message
+  HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+  HAL_UART_Transmit(&huart2, (uint8_t *)"\n\r", 2, HAL_MAX_DELAY); // New line
+
+  // Input loop for 3 phrases
+  for (j = 0; j < NLINES; j++)
+  {
+    HAL_UART_Transmit(&huart2, (uint8_t *)"Enter phrase: ", sizeof("Enter phrase: "), HAL_MAX_DELAY);
+    nchars = get_line(line, MAXLINE); // Get each line input
+    HAL_UART_Transmit(&huart2, (uint8_t *)"\n\r", 2, HAL_MAX_DELAY); // New line
+
+    itoa(nchars, datanum, 10); // Convert number of characters entered to string
+    // HAL_UART_Transmit(&huart2, (uint8_t *)datanum, strlen(datanum), HAL_MAX_DELAY);
+
+    strcpy(*nxt_string, line); // Save the entered line into the array
+    nxt_string++;  // Move to the next string in the array
+
+    HAL_UART_Transmit(&huart2, (uint8_t *)*nxt_string, strlen(*nxt_string), HAL_MAX_DELAY); // Output the entered phrase
+    HAL_UART_Transmit(&huart2, (uint8_t *)"\n\n\r", 3, HAL_MAX_DELAY); // 2 line space
+
+    flags &= ~Done; // Clear the Done flag for the next word
+  }
+
+  HAL_UART_Transmit(&huart2, (uint8_t *)"\n\nYou entered:\n\r", 18, HAL_MAX_DELAY);
+
+  // Output the entered phrases in the same order
+  for (j = 0; j < NLINES; j++)
+  {
+    HAL_UART_Transmit(&huart2, (uint8_t *)strtbl[j], strlen(strtbl[j]), HAL_MAX_DELAY);
+    HAL_UART_Transmit(&huart2, (uint8_t *)"\n\r", 2, HAL_MAX_DELAY); // New line
+  }
+  __HAL_UART_FLUSH_DRREGISTER(&huart2);  // Flush UART data register to avoid residual data
+
+
+  while (1) // Stay here forever (after completing the task)
+    ;
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_MSI;
+  RCC_OscInitStruct.MSIState = RCC_MSI_ON;
+  RCC_OscInitStruct.MSICalibrationValue = 0;
+  RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_6;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
+                                RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_MSI;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  __HAL_RCC_GPIOA_CLK_ENABLE();  // Enable GPIOA clock
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  // Configure GPIO for USART2 TX (PA2) and RX (PA3)
+  GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_3;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;  // Alternate function push-pull mode
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);  // Initialize GPIOA
+}
+
+/* USER CODE BEGIN 4 */
+
+/* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  __disable_irq();
+  while (1)
+  {
+  }
+}
+
+#ifdef  USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */
